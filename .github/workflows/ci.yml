@@ -17,3 +17,12 @@ jobs:
           chmod +x hardline
           ./hardline --no-color || true   # FAILs are expected on a CI runner
           ./hardline --json | python3 -c 'import json,sys; json.load(sys.stdin)'
+
+  bats:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: install bats
+        run: npm install -g bats
+      - name: bats
+        run: bats tests/
