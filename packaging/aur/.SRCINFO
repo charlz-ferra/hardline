@@ -1,0 +1,15 @@
+pkgbase = hardline
+	pkgdesc = Dependency-free Linux hardening auditor in a single bash file
+	pkgver = 1.1.0
+	pkgrel = 1
+	url = https://github.com/charlz-ferra/hardline
+	arch = any
+	license = MIT
+	depends = bash
+	depends = iproute2
+	optdepends = fail2ban: fail2ban jail check
+	optdepends = ufw: firewall state check
+	source = hardline-1.1.0.tar.gz::https://github.com/charlz-ferra/hardline/archive/refs/tags/v1.1.0.tar.gz
+	sha256sums = 12144324afbea53729a21926311c2729279c1a6a7986c34bebdcabb7bdda6fef
+
+pkgname = hardline

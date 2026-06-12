@@ -1,0 +1,23 @@
+# Maintainer: charlz-ferra <281660350+charlz-ferra@users.noreply.github.com>
+pkgname=hardline
+pkgver=1.1.0
+pkgrel=1
+pkgdesc="Dependency-free Linux hardening auditor in a single bash file"
+arch=('any')
+url="https://github.com/charlz-ferra/hardline"
+license=('MIT')
+depends=('bash' 'iproute2')
+optdepends=('fail2ban: fail2ban jail check'
+	'ufw: firewall state check')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('12144324afbea53729a21926311c2729279c1a6a7986c34bebdcabb7bdda6fef')
+
+package() {
+	cd "$pkgname-$pkgver"
+	install -Dm755 hardline "$pkgdir/usr/bin/hardline"
+	install -Dm644 hardline.1 "$pkgdir/usr/share/man/man1/hardline.1"
+	install -Dm644 completions/hardline.bash "$pkgdir/usr/share/bash-completion/completions/hardline"
+	install -Dm644 completions/hardline.fish "$pkgdir/usr/share/fish/vendor_completions.d/hardline.fish"
+	install -Dm644 completions/_hardline "$pkgdir/usr/share/zsh/site-functions/_hardline"
+	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
