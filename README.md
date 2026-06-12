@@ -41,11 +41,15 @@ chmod +x hardline
 ./hardline
 ```
 
-Or drop it in your `$PATH`:
+Or install it properly — binary, man page, and bash/zsh/fish completions:
 
 ```bash
-sudo install -m 755 hardline /usr/local/bin/
+git clone https://github.com/charlz-ferra/hardline && cd hardline
+sudo ./install.sh                 # system-wide (/usr/local)
+PREFIX=~/.local ./install.sh      # user-local, no root
 ```
+
+Then `man hardline` works and `hardline --<Tab>` completes.
 
 ## Usage
 

@@ -1,0 +1,8 @@
+#compdef hardline
+# zsh completion for hardline
+_arguments \
+	'--json[machine-readable JSON output]' \
+	'--quiet[only WARN/FAIL lines and the summary]' \
+	'--no-color[strip ANSI colors]' \
+	'(-h --help)'{-h,--help}'[show usage and exit]' \
+	'(-V --version)'{-V,--version}'[show version and exit]'

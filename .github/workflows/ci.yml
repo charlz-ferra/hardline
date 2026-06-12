@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: shellcheck
-        run: shellcheck -S style hardline
+        run: shellcheck -S style hardline install.sh
       - name: smoke run
         run: |
           chmod +x hardline

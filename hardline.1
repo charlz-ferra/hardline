@@ -1,0 +1,87 @@
+.TH HARDLINE 1 "June 2026" "hardline 1.0.0" "User Commands"
+.SH NAME
+hardline \- dependency-free Linux hardening auditor
+.SH SYNOPSIS
+.B hardline
+.RB [ \-\-json ]
+.RB [ \-\-quiet ]
+.RB [ \-\-no\-color ]
+.br
+.B hardline
+.RB [ \-h | \-\-help ]
+.RB [ \-V | \-\-version ]
+.SH DESCRIPTION
+.B hardline
+is a single bash script that runs roughly forty read-only checks across SSH,
+kernel sysctls, the firewall, accounts and sudo, the filesystem, and services,
+then prints a colored report and a letter grade.
+.PP
+It only reads. It never edits a config, restarts a service, or contacts the
+network. Each finding points you at what to look at; the fix stays your call.
+A handful of checks (the empty-password scan, NOPASSWD sudo rules, the full
+sshd configuration) need root to read their source files \(em without
+.BR sudo (8)
+they report
+.B SKIP
+rather than a misleading
+.BR PASS .
+.SH OPTIONS
+.TP
+.B \-\-json
+Emit machine-readable JSON instead of the human report: an object with
+.IR score ", " grade ", the " pass / warn / fail / skip " counts, and a " checks
+array. Ideal for CI and dashboards.
+.TP
+.B \-\-quiet
+Suppress
+.B PASS
+and
+.B SKIP
+lines; show only
+.BR WARN ", " FAIL ", and the summary."
+.TP
+.B \-\-no\-color
+Strip ANSI escape sequences. Applied automatically when stdout is not a TTY.
+.TP
+.BR \-h ", " \-\-help
+Print a short usage summary and exit.
+.TP
+.BR \-V ", " \-\-version
+Print the version and exit.
+.SH "GRADING"
+The score is
+.RI ( PASS " + " WARN "\(mu0.5) / total" .
+Letter grades run from F to A+, and any single
+.B FAIL
+caps the grade at C \(em one open door undoes a lot of good locks.
+.B SKIP
+results do not count against the score.
+.SH "EXIT STATUS"
+.TP
+.B 0
+No
+.B FAIL
+results.
+.TP
+.B 1
+One or more checks failed.
+.TP
+.B 2
+Usage error (unknown option).
+.SH EXAMPLES
+.TP
+Audit the current host as root for the fullest coverage:
+.B sudo hardline
+.TP
+Fail a CI job on any finding and capture the report:
+.B hardline \-\-json | jq \-e '.fail == 0'
+.SH "SEE ALSO"
+.BR lynis (8),
+.BR sshd_config (5),
+.BR sysctl (8)
+.PP
+Project home:
+.UR https://github.com/charlz-ferra/hardline
+.UE
+.SH AUTHOR
+charlz-ferra
