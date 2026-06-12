@@ -51,6 +51,12 @@ PREFIX=~/.local ./install.sh      # user-local, no root
 
 Then `man hardline` works and `hardline --<Tab>` completes.
 
+On Arch-based distros (PKGBUILD under [`packaging/aur/`](packaging/aur/)):
+
+```bash
+yay -S hardline
+```
+
 ## Usage
 
 ```bash
