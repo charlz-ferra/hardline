@@ -1,0 +1,19 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -S style hardline
+      - name: smoke run
+        run: |
+          chmod +x hardline
+          ./hardline --no-color || true   # FAILs are expected on a CI runner
+          ./hardline --json | python3 -c 'import json,sys; json.load(sys.stdin)'

@@ -1,0 +1,362 @@
+#!/usr/bin/env bash
+# hardline — a dependency-free Linux hardening auditor.
+#
+# One bash file, no pip, no apt, no agents. Runs ~40 checks across SSH, kernel
+# sysctls, firewall, accounts, filesystem and services, then prints a colored
+# report and a letter grade. Built for the 3am "is this box actually locked
+# down or do I just feel safe?" question.
+#
+# Usage:
+#   hardline                 # full audit, human report
+#   hardline --json          # machine-readable (CI / dashboards)
+#   hardline --quiet         # only WARN/FAIL lines + summary
+#   hardline --no-color      # strip ANSI (logs, pipes)
+#   sudo hardline            # a handful of checks read root-only files
+#
+# Exit code: 0 if no FAILs, 1 if any FAIL. WARNs never fail the run.
+#
+# It only READS. hardline never edits a config, restarts a service, or phones
+# home. The fix is always yours to make — it just tells you where to look.
+set -uo pipefail
+
+VERSION="1.0.0"
+
+# ── output mode ───────────────────────────────────────────────────────────
+JSON=0
+QUIET=0
+COLOR=1
+for arg in "$@"; do
+	case "$arg" in
+	--json) JSON=1 ;;
+	--quiet) QUIET=1 ;;
+	--no-color) COLOR=0 ;;
+	-h | --help)
+		sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+		exit 0
+		;;
+	-V | --version)
+		echo "hardline $VERSION"
+		exit 0
+		;;
+	*)
+		echo "hardline: unknown option '$arg' (try --help)" >&2
+		exit 2
+		;;
+	esac
+done
+[ -t 1 ] || COLOR=0
+
+if [ "$COLOR" = 1 ]; then
+	C_RST=$'\e[0m' C_DIM=$'\e[2m' C_BOLD=$'\e[1m'
+	C_RED=$'\e[31m' C_GRN=$'\e[32m' C_YEL=$'\e[33m' C_CYN=$'\e[36m'
+else
+	C_RST="" C_DIM="" C_BOLD="" C_RED="" C_GRN="" C_YEL="" C_CYN=""
+fi
+
+# ── scoring state ─────────────────────────────────────────────────────────
+PASS=0 WARN=0 FAIL=0 SKIP=0
+JSON_ITEMS=()
+CUR_SECTION=""
+
+section() {
+	CUR_SECTION="$1"
+	[ "$JSON" = 1 ] && return
+	[ "$QUIET" = 1 ] && return
+	printf '\n%s%s── %s%s\n' "$C_BOLD" "$C_CYN" "$1" "$C_RST"
+}
+
+# json-escape a string
+jesc() {
+	local s=$1
+	s=${s//\\/\\\\}
+	s=${s//\"/\\\"}
+	s=${s//$'\n'/ }
+	s=${s//$'\t'/ }
+	printf '%s' "$s"
+}
+
+# report <status> <title> <detail>
+#   status: PASS | WARN | FAIL | SKIP
+report() {
+	local status=$1 title=$2 detail=${3:-}
+	case "$status" in
+	PASS) PASS=$((PASS + 1)) ;;
+	WARN) WARN=$((WARN + 1)) ;;
+	FAIL) FAIL=$((FAIL + 1)) ;;
+	SKIP) SKIP=$((SKIP + 1)) ;;
+	esac
+
+	if [ "$JSON" = 1 ]; then
+		JSON_ITEMS+=("{\"section\":\"$(jesc "$CUR_SECTION")\",\"status\":\"$status\",\"check\":\"$(jesc "$title")\",\"detail\":\"$(jesc "$detail")\"}")
+		return
+	fi
+
+	[ "$QUIET" = 1 ] && [ "$status" = PASS ] && return
+	[ "$QUIET" = 1 ] && [ "$status" = SKIP ] && return
+
+	local tag col
+	case "$status" in
+	PASS) tag="PASS" col="$C_GRN" ;;
+	WARN) tag="WARN" col="$C_YEL" ;;
+	FAIL) tag="FAIL" col="$C_RED" ;;
+	SKIP) tag="SKIP" col="$C_DIM" ;;
+	esac
+	printf '  %s[%s]%s %s' "$col" "$tag" "$C_RST" "$title"
+	[ -n "$detail" ] && printf ' %s— %s%s' "$C_DIM" "$detail" "$C_RST"
+	printf '\n'
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# read effective sshd setting (handles Match-less global config + drop-ins)
+sshd_val() {
+	local key=$1
+	if have sshd; then
+		sshd -T 2>/dev/null | awk -v k="${key,,}" 'tolower($1)==k{$1="";sub(/^ /,"");print;exit}'
+	else
+		grep -rhiE "^[[:space:]]*${key}[[:space:]]" /etc/ssh/sshd_config /etc/ssh/sshd_config.d/ 2>/dev/null |
+			awk '{print $2; exit}'
+	fi
+}
+
+# read a sysctl, normalizing whitespace
+sysval() { sysctl -n "$1" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/ $//'; }
+
+# ════════════════════════════════════════════════════════════════════════════
+section "SSH"
+
+if have sshd || [ -f /etc/ssh/sshd_config ]; then
+	v=$(sshd_val permitrootlogin)
+	case "$v" in
+	no | forced-commands-only) report PASS "Root SSH login disabled" "PermitRootLogin=$v" ;;
+	prohibit-password | without-password) report WARN "Root SSH key-only" "PermitRootLogin=$v — prefer 'no'" ;;
+	"") report SKIP "PermitRootLogin" "could not read sshd config (try sudo)" ;;
+	*) report FAIL "Root SSH login allowed" "PermitRootLogin=$v" ;;
+	esac
+
+	v=$(sshd_val passwordauthentication)
+	case "$v" in
+	no) report PASS "Password auth disabled" "keys only" ;;
+	yes) report FAIL "Password auth enabled" "brute-forceable — set PasswordAuthentication no" ;;
+	*) report SKIP "PasswordAuthentication" ;;
+	esac
+
+	v=$(sshd_val permitemptypasswords)
+	[ "$v" = no ] && report PASS "Empty passwords rejected" ""
+	[ "$v" = yes ] && report FAIL "Empty passwords permitted" "PermitEmptyPasswords=yes"
+
+	v=$(sshd_val x11forwarding)
+	[ "$v" = no ] && report PASS "X11 forwarding off" ""
+	[ "$v" = yes ] && report WARN "X11 forwarding on" "attack surface if unused"
+
+	v=$(sshd_val maxauthtries)
+	if [ -n "$v" ]; then
+		if [ "$v" -le 4 ] 2>/dev/null; then report PASS "MaxAuthTries tight" "$v"; else report WARN "MaxAuthTries loose" "$v — consider ≤4"; fi
+	fi
+
+	v=$(sshd_val port)
+	[ -n "$v" ] && [ "$v" = 22 ] && report WARN "SSH on default port 22" "noisy; not security but cuts log spam"
+	[ -n "$v" ] && [ "$v" != 22 ] && report PASS "SSH on non-default port" "$v"
+else
+	report SKIP "SSH" "sshd not present"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+section "Kernel / sysctl"
+
+if have sysctl; then
+	declare -A SYSCTL_WANT=(
+		["net.ipv4.conf.all.rp_filter"]="1|2"
+		["net.ipv4.conf.all.accept_redirects"]="0"
+		["net.ipv4.conf.all.send_redirects"]="0"
+		["net.ipv4.conf.all.accept_source_route"]="0"
+		["net.ipv4.tcp_syncookies"]="1"
+		["net.ipv4.icmp_echo_ignore_broadcasts"]="1"
+		["net.ipv6.conf.all.accept_redirects"]="0"
+		["kernel.randomize_va_space"]="2"
+		["kernel.kptr_restrict"]="1|2"
+		["kernel.dmesg_restrict"]="1"
+		["fs.protected_hardlinks"]="1"
+		["fs.protected_symlinks"]="1"
+	)
+	for key in "${!SYSCTL_WANT[@]}"; do
+		want=${SYSCTL_WANT[$key]}
+		got=$(sysval "$key")
+		if [ -z "$got" ]; then
+			report SKIP "$key" "not exposed by kernel"
+		elif [[ "|$want|" == *"|$got|"* ]]; then
+			report PASS "$key" "= $got"
+		else
+			report WARN "$key" "= $got, want $want"
+		fi
+	done
+else
+	report SKIP "sysctl" "not available"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+section "Firewall"
+
+fw_found=0
+if have ufw && ufw status 2>/dev/null | grep -qi "Status: active"; then
+	fw_found=1
+	report PASS "ufw active" ""
+elif have firewall-cmd && firewall-cmd --state 2>/dev/null | grep -qi running; then
+	fw_found=1
+	report PASS "firewalld running" ""
+elif have nft && [ -n "$(nft list ruleset 2>/dev/null)" ]; then
+	fw_found=1
+	# crude default-drop heuristic
+	if nft list ruleset 2>/dev/null | grep -qiE 'type filter hook input.*policy drop'; then
+		report PASS "nftables: input policy drop" ""
+	else
+		report WARN "nftables present, input not default-drop" "verify your INPUT policy"
+	fi
+elif have iptables; then
+	pol=$(iptables -S INPUT 2>/dev/null | head -1)
+	if [ "$pol" = "-P INPUT DROP" ]; then
+		fw_found=1
+		report PASS "iptables INPUT policy DROP" ""
+	elif [ -n "$pol" ]; then
+		report WARN "iptables INPUT policy not DROP" "$pol"
+	fi
+fi
+[ "$fw_found" = 0 ] && report FAIL "No active firewall detected" "ufw/firewalld/nftables/iptables all idle"
+
+if have fail2ban-client && fail2ban-client ping >/dev/null 2>&1; then
+	jails=$(fail2ban-client status 2>/dev/null | awk -F: '/Jail list/{gsub(/[[:space:]]/,"",$2);print $2}')
+	report PASS "fail2ban running" "${jails:-no jails}"
+else
+	report WARN "fail2ban not running" "SSH brute-force goes unthrottled"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+section "Accounts & sudo"
+
+# UID 0 accounts other than root
+extra_root=$(awk -F: '($3==0 && $1!="root"){print $1}' /etc/passwd 2>/dev/null | paste -sd, -)
+if [ -n "$extra_root" ]; then
+	report FAIL "Extra UID-0 accounts" "$extra_root"
+else
+	report PASS "root is the only UID 0" ""
+fi
+
+# empty password fields (needs shadow → root)
+if [ -r /etc/shadow ]; then
+	empties=$(awk -F: '($2==""){print $1}' /etc/shadow | paste -sd, -)
+	if [ -n "$empties" ]; then report FAIL "Accounts with empty password" "$empties"; else report PASS "No empty-password accounts" ""; fi
+else
+	report SKIP "Empty-password scan" "/etc/shadow unreadable (try sudo)"
+fi
+
+# passwordless sudo
+if [ -r /etc/sudoers ]; then
+	nopass=$(grep -rhE 'NOPASSWD' /etc/sudoers /etc/sudoers.d/ 2>/dev/null | grep -cvE '^\s*#')
+	if [ "$nopass" -gt 0 ]; then report WARN "NOPASSWD sudo rules present" "$nopass rule(s) — audit them"; else report PASS "No NOPASSWD sudo rules" ""; fi
+else
+	report SKIP "sudo NOPASSWD scan" "/etc/sudoers unreadable (try sudo)"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+section "Filesystem"
+
+# world-writable files outside /tmp-ish, no sticky bit (cap output)
+ww=$(find / -xdev -type f -perm -0002 \
+	! -path '/proc/*' ! -path '/sys/*' ! -path '/tmp/*' ! -path '/var/tmp/*' \
+	2>/dev/null | head -20)
+if [ -n "$ww" ]; then
+	n=$(printf '%s\n' "$ww" | grep -c .)
+	report WARN "World-writable files" "$n+ found, e.g. $(printf '%s' "$ww" | head -1)"
+else
+	report PASS "No stray world-writable files" ""
+fi
+
+# unowned files (deleted user) — cap the scan
+unowned=$(find / -xdev \( -nouser -o -nogroup \) ! -path '/proc/*' ! -path '/sys/*' 2>/dev/null | head -1)
+if [ -n "$unowned" ]; then report WARN "Unowned files present" "e.g. $unowned"; else report PASS "No unowned files" ""; fi
+
+# SUID root binaries — informational baseline count
+if have find; then
+	suid=$(find / -xdev -type f -perm -4000 ! -path '/proc/*' 2>/dev/null | wc -l)
+	report PASS "SUID binaries baseline" "$suid found — diff this over time"
+fi
+
+# /tmp mount hardening
+if mount | grep -qE ' on /tmp .*\bnoexec\b'; then
+	report PASS "/tmp mounted noexec" ""
+else
+	report WARN "/tmp not noexec" "common malware drop zone"
+fi
+
+# ════════════════════════════════════════════════════════════════════════════
+section "Updates & services"
+
+# automatic security updates
+if [ -f /etc/apt/apt.conf.d/20auto-upgrades ] && grep -q '"1"' /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null; then
+	report PASS "Unattended-upgrades configured" ""
+elif have dnf && systemctl is-enabled --quiet dnf-automatic.timer 2>/dev/null; then
+	report PASS "dnf-automatic enabled" ""
+elif have pacman; then
+	report SKIP "Auto-updates" "rolling distro — update manually & often"
+else
+	report WARN "No automatic security updates" "patch lag = exposure"
+fi
+
+# listening services on all interfaces
+if have ss; then
+	pub=$(ss -tlnH 2>/dev/null | awk '{print $4}' | grep -cE '^(0\.0\.0\.0|\*|\[::\]):')
+	if [ "$pub" -gt 0 ]; then
+		report WARN "Services on all interfaces" "$pub socket(s) on 0.0.0.0/:: — confirm each is meant to be public"
+	else
+		report PASS "No services bound to 0.0.0.0" ""
+	fi
+fi
+
+# core dumps
+cl=$(sysval kernel.core_pattern)
+[ -n "$cl" ] && [[ "$cl" == *systemd-coredump* ]] && report PASS "Core dumps via systemd-coredump" ""
+
+# ════════════════════════════════════════════════════════════════════════════
+# summary + grade
+total=$((PASS + WARN + FAIL))
+# weighted score: PASS=1, WARN=0.5, FAIL=0
+if [ "$total" -gt 0 ]; then
+	score=$(awk -v p="$PASS" -v w="$WARN" -v t="$total" 'BEGIN{printf "%d", (p + w*0.5) / t * 100}')
+else
+	score=0
+fi
+
+grade="F"
+[ "$score" -ge 50 ] && grade="D"
+[ "$score" -ge 65 ] && grade="C"
+[ "$score" -ge 78 ] && grade="B"
+[ "$score" -ge 88 ] && grade="A"
+[ "$score" -ge 95 ] && grade="A+"
+# any FAIL caps the grade at C
+if [ "$FAIL" -gt 0 ] && [[ "$grade" == A* || "$grade" == B ]]; then
+	grade="C"
+fi
+
+if [ "$JSON" = 1 ]; then
+	printf '{"version":"%s","score":%d,"grade":"%s","pass":%d,"warn":%d,"fail":%d,"skip":%d,"checks":[' \
+		"$VERSION" "$score" "$grade" "$PASS" "$WARN" "$FAIL" "$SKIP"
+	for i in "${!JSON_ITEMS[@]}"; do
+		[ "$i" -gt 0 ] && printf ','
+		printf '%s' "${JSON_ITEMS[$i]}"
+	done
+	printf ']}\n'
+else
+	gcol="$C_RED"
+	[ "$grade" = C ] || [ "$grade" = D ] && gcol="$C_YEL"
+	[[ "$grade" == A* ]] || [ "$grade" = B ] && gcol="$C_GRN"
+	printf '\n%s%s── Summary%s\n' "$C_BOLD" "$C_CYN" "$C_RST"
+	printf '  %sPASS %d%s   %sWARN %d%s   %sFAIL %d%s   %sSKIP %d%s\n' \
+		"$C_GRN" "$PASS" "$C_RST" "$C_YEL" "$WARN" "$C_RST" \
+		"$C_RED" "$FAIL" "$C_RST" "$C_DIM" "$SKIP" "$C_RST"
+	printf '  Score: %s%d/100%s   Grade: %s%s%s%s\n\n' \
+		"$C_BOLD" "$score" "$C_RST" "$C_BOLD" "$gcol" "$grade" "$C_RST"
+	[ "$FAIL" -gt 0 ] && printf '  %sFix the FAILs first — they are the doors left open.%s\n\n' "$C_DIM" "$C_RST"
+fi
+
+[ "$FAIL" -gt 0 ] && exit 1
+exit 0
