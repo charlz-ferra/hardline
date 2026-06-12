@@ -19,7 +19,7 @@
 # home. The fix is always yours to make — it just tells you where to look.
 set -uo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 
 # ── output mode ───────────────────────────────────────────────────────────
 JSON=0

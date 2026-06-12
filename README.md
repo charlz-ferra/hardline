@@ -94,7 +94,7 @@ hardline --json | jq '.checks[] | select(.status=="FAIL")'
 
 ```json
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "score": 85,
   "grade": "C",
   "pass": 31,
